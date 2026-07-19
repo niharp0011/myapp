@@ -1,7 +1,9 @@
 name: CD - Deploy to EC2
+
 on:
   workflow_run:
-    workflows: ["CI - Build & Push Docker Image"]
+    workflows:
+      - "CI Build & Push Docker Image"
     types:
       - completed
 
@@ -9,35 +11,91 @@ jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v0.1.7
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.HOST_DNS }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+
+            set -e
+
             IMAGE=${{ secrets.DOCKER_USERNAME }}/myapp
             TAG=${{ github.event.workflow_run.head_sha }}
 
-            echo "=== STEP 1: Updating System Packages ==="
-            sudo apt-get update -y
+            echo "======================================="
+            echo "Starting Deployment"
+            echo "======================================="
 
-            echo "=== STEP 2: Installing Docker Non-Interactively ==="
-            sudo NEEDRESTART_MODE=a apt-get install -y docker.io
+            ####################################################
+            # Install Docker if not installed
+            ####################################################
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Docker not found. Installing..."
 
-            echo "=== STEP 3: Starting Docker Service ==="
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io
+
+              sudo systemctl enable docker
+              sudo systemctl start docker
+
+              sudo usermod -aG docker ubuntu || true
+
+              echo "Docker Installed Successfully."
+            else
+              echo "Docker already installed."
+            fi
+
+            ####################################################
+            # Ensure Docker is running
+            ####################################################
             sudo systemctl start docker
             sudo systemctl enable docker
 
-            echo "=== STEP 4: Cleaning Up Old Container ==="
+            echo "Docker Version:"
+            sudo docker --version
+
+            ####################################################
+            # Remove old container
+            ####################################################
+            echo "Stopping old container..."
+
             sudo docker stop myapp || true
             sudo docker rm -f myapp || true
 
-            echo "=== STEP 5: Pulling New Image from Docker Hub ==="
+            ####################################################
+            # Remove old dangling images
+            ####################################################
+            sudo docker image prune -f || true
+
+            ####################################################
+            # Pull latest image
+            ####################################################
+            echo "Pulling latest Docker image..."
+
             sudo docker pull $IMAGE:$TAG
 
-            echo "=== STEP 6: Running Automated Container ==="
-            sudo docker run -d --restart always --name myapp -p 8080:80 $IMAGE:$TAG
+            ####################################################
+            # Run new container
+            ####################################################
+            echo "Starting new container..."
 
-            echo "=== SUCCESS: Fully Automated Deployment Completed! ==="
+            sudo docker run -d \
+              --name myapp \
+              --restart always \
+              -p 8080:80 \
+              $IMAGE:$TAG
+
+            ####################################################
+            # Verify Deployment
+            ####################################################
+            echo "Running Containers"
+
+            sudo docker ps
+
+            echo "======================================="
+            echo "Deployment Successful"
+            echo "======================================="
